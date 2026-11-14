@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type {
   HeardHistory,
   SaveSlot,
@@ -32,8 +32,17 @@ import {
   exportSlot,
   validateSnapshot,
 } from "../features/profiles";
+import { useStudio } from "../features/studio/model/useStudio";
+import { mergeContent, reachableContent } from "../features/studio/model/publish";
+import {
+  assertCasePack,
+  buildCasePack,
+  importCasePackStudio,
+} from "../features/studio/lib/bundle";
+
 export function useCase() {
   const [boot] = useState(() => readSlots(CASE_CONTENT));
+  const studio = useStudio();
   const [story, setStory] = useState(createInvestigation),
     [evidence, setEvidence] = useState(createEvidence),
     [heard, setHeard] = useState<HeardHistory>({}),
@@ -43,7 +52,32 @@ export function useCase() {
       boot.warning || "戴上耳机，从第一通来电开始调查。",
     ),
     [dirty, setDirty] = useState(false);
-  const episode = resolveEpisode(CASE_CONTENT, story.sceneId, evidence.clues);
+
+  // 运行时内容：包含已取消发布的保留版本，保证当前调查与旧存档不失效
+  const runtimeContent = useMemo(
+    () =>
+      studio.ready
+        ? mergeContent(CASE_CONTENT, studio.projects, {
+            retainUnpublished: true,
+          })
+        : CASE_CONTENT,
+    [studio.projects, studio.ready],
+  );
+  // 图内容：仅当前仍发布且可达的场景，用于章节与调查方向
+  const graphContent = useMemo(
+    () =>
+      reachableContent(
+        mergeContent(CASE_CONTENT, studio.projects, {
+          retainUnpublished: false,
+        }),
+      ),
+    [studio.projects],
+  );
+  const episode = resolveEpisode(
+    runtimeContent,
+    story.sceneId,
+    evidence.clues,
+  );
   const onHeard = useCallback((id: string, position: number) => {
     setHeard((h) => recordPosition(h, id, position));
   }, []);
@@ -62,12 +96,13 @@ export function useCase() {
     } else {
       audio.queueSeek(position);
     }
-    if (id !== story.sceneId) setStory((s) => enterScene(CASE_CONTENT, s, id));
+    if (id !== story.sceneId)
+      setStory((s) => enterScene(runtimeContent, s, id));
     setDirty(true);
   };
   const choose = (id: string) =>
     run(() => {
-      const next = applyChoice(CASE_CONTENT, story, id, evidence.clues);
+      const next = applyChoice(graphContent, story, id, evidence.clues);
       audio.pause();
       audio.queueSeek(0);
       setStory(next);
@@ -118,11 +153,17 @@ export function useCase() {
   };
   const save = (name: string) =>
     run(() => {
-      const snapshot = createSnapshot(CASE_CONTENT, story, evidence, heard, {
-        sceneId: story.sceneId,
-        position: audio.view.position,
-        rate: audio.view.rate,
-      });
+      const snapshot = createSnapshot(
+        runtimeContent,
+        story,
+        evidence,
+        heard,
+        {
+          sceneId: story.sceneId,
+          position: audio.view.position,
+          rate: audio.view.rate,
+        },
+      );
       const old = slots.find((s) => s.id === activeId);
       const slot =
         old && name === old.name
@@ -138,10 +179,10 @@ export function useCase() {
     run(() => {
       const slot = slots.find((s) => s.id === id);
       if (!slot) throw new Error("存档不存在");
-      const snap = validateSnapshot(slot.snapshot, CASE_CONTENT);
+      const snap = validateSnapshot(slot.snapshot, runtimeContent);
       audio.pause();
       const nextEpisode = resolveEpisode(
-        CASE_CONTENT,
+        runtimeContent,
         snap.story.sceneId,
         snap.evidence.clues,
       );
@@ -162,7 +203,7 @@ export function useCase() {
     });
   const importText = (text: string) =>
     run(() => {
-      const slot = parseImported(text, CASE_CONTENT);
+      const slot = parseImported(text, runtimeContent);
       setSlots(writeSlot(slots, slot));
       setNotice("导入成功，已另存为独立调查进度。");
     });
@@ -178,6 +219,55 @@ export function useCase() {
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
+  const downloadCasePack = (id: string) =>
+    (async () => {
+      const s = slots.find((s) => s.id === id);
+      if (!s) throw new Error("存档不存在");
+      const pack = await buildCasePack(s, studio.projects);
+      const blob = new Blob([JSON.stringify(pack, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `雾港案件-${s.name}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    })().catch((e) =>
+      setNotice(e instanceof Error ? e.message : "案件包导出失败"),
+    );
+  const importPackText = (text: string) =>
+    (async () => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error("导入失败：文件不是有效 JSON");
+      }
+      const isPack =
+        parsed &&
+        typeof parsed === "object" &&
+        (parsed as { format?: string }).format ===
+          "midnight-frequency-case";
+      if (isPack) {
+        const pack = assertCasePack(parsed);
+        const { projects: imported, remappedSlot } =
+          await importCasePackStudio(pack);
+        studio.absorb(imported);
+        const slot = parseImported(
+          JSON.stringify(remappedSlot),
+          runtimeContent,
+        );
+        setSlots(writeSlot(slots, slot));
+        setNotice(
+          imported.length
+            ? "案件包导入成功：自创录音已还原，调查进度另存为新档案。"
+            : "调查进度已导入（该档案不含自创场景）。",
+        );
+        return;
+      }
+      importText(text);
+    })();
   return {
     story,
     evidence,
@@ -188,6 +278,9 @@ export function useCase() {
     dirty,
     episode,
     audio,
+    studio,
+    runtimeContent,
+    graphContent,
     go,
     choose,
     note,
@@ -196,7 +289,9 @@ export function useCase() {
     save,
     load,
     importText,
+    importPackText,
     download,
+    downloadCasePack,
     edit: (id: string, text: string) => {
       setEvidence((s) => editNote(s, id, text));
       setDirty(true);

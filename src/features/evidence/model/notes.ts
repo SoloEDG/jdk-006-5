@@ -3,9 +3,7 @@ export function normalizeAnchor(anchor: AudioBookmark): AudioBookmark {
   if (
     !anchor ||
     typeof anchor.sceneId !== "string" ||
-    !["arrival", "harbor", "interview", "tower", "finale"].includes(
-      anchor.sceneId,
-    ) ||
+    !anchor.sceneId.trim() ||
     !Number.isFinite(anchor.start) ||
     !Number.isFinite(anchor.end) ||
     anchor.start < 0 ||

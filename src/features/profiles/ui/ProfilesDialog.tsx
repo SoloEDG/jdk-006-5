@@ -3,12 +3,14 @@ import {
   Archive,
   Download,
   FolderOpen,
+  Package,
   Plus,
   Trash2,
   Upload,
   X,
 } from "lucide-react";
 import type { SaveSlot } from "../../../shared/types";
+import { MAX_SLOTS } from "../model/slots";
 interface Props {
   slots: SaveSlot[];
   activeId: string | null;
@@ -16,7 +18,9 @@ interface Props {
   onSave: (name: string) => void;
   onDelete: (id: string) => void;
   onImport: (text: string) => void;
+  onImportPack: (text: string) => Promise<void>;
   onExport: (id: string) => void;
+  onExportCase: (id: string) => void;
   onClose: () => void;
 }
 export function ProfilesDialog({
@@ -26,7 +30,9 @@ export function ProfilesDialog({
   onSave,
   onDelete,
   onImport,
+  onImportPack,
   onExport,
+  onExportCase,
   onClose,
 }: Props) {
   const [name, setName] = useState(""),
@@ -88,12 +94,12 @@ export function ProfilesDialog({
             />
             <button
               className="primary-button"
-              disabled={!name.trim() || slots.length >= 8}
+              disabled={!name.trim() || slots.length >= MAX_SLOTS}
             >
               <Plus size={15} /> 保存当前进度
             </button>
           </div>
-          <small>{slots.length}/8 份档案 · 仅保存在当前浏览器</small>
+          <small>{slots.length}/{MAX_SLOTS} 份档案 · 仅保存在当前浏览器</small>
         </form>
         {error && (
           <p className="inline-error" role="alert">
@@ -134,7 +140,13 @@ export function ProfilesDialog({
                     aria-label={`导出 ${slot.name}`}
                     onClick={() => run(() => onExport(slot.id))}
                   >
-                    <Download size={15} />
+                    <Download size={15} /> 存档
+                  </button>
+                  <button
+                    aria-label={`导出含自创录音的案件包 ${slot.name}`}
+                    onClick={() => run(() => onExportCase(slot.id))}
+                  >
+                    <Package size={15} /> 案件包
                   </button>
                   <button
                     aria-label={`删除 ${slot.name}`}
@@ -157,7 +169,17 @@ export function ProfilesDialog({
               const selected = event.target.files?.[0];
               if (!selected) return;
               try {
-                onImport(await selected.text());
+                const text = await selected.text();
+                const parsed = JSON.parse(text);
+                if (
+                  parsed &&
+                  typeof parsed === "object" &&
+                  parsed.format === "midnight-frequency-case"
+                ) {
+                  await onImportPack(text);
+                } else {
+                  onImport(text);
+                }
                 setError("");
               } catch (e) {
                 setError(e instanceof Error ? e.message : "无法导入档案");

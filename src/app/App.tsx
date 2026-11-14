@@ -12,9 +12,9 @@ import {
   Check,
   ChevronRight,
   Info,
+  Wand2,
 } from "lucide-react";
 import {
-  CASE_CONTENT,
   Chapters,
   Directions,
   SceneArtwork,
@@ -25,19 +25,36 @@ import { TranscriptPanel } from "../features/transcript";
 import { EvidencePanel, canCollectSound } from "../features/evidence";
 import { ProfilesDialog } from "../features/profiles";
 import { currentCue } from "../features/transcript";
+import { StudioDialog } from "../features/studio/ui/StudioDialog";
 import { useCase } from "./useCase";
+
 export function App() {
   const c = useCase(),
     [tab, setTab] = useState<"transcript" | "evidence">("transcript"),
     [profiles, setProfiles] = useState(false),
+    [studio, setStudio] = useState(false),
     [about, setAbout] = useState(false);
-  const scene = CASE_CONTENT.scenes.find((s) => s.id === c.story.sceneId)!,
-    cue = currentCue(c.episode, c.audio.view.position),
+  const graph = c.graphContent;
+  const runtimeScene = c.runtimeContent.scenes.find(
+    (s) => s.id === c.story.sceneId,
+  )!;
+  const scene = graph.scenes.find((s) => s.id === c.story.sceneId) ?? {
+    ...runtimeScene,
+    choices: runtimeScene.choices.filter((choice) =>
+      graph.scenes.some((s) => s.id === choice.target),
+    ),
+  };
+  const cue = currentCue(c.episode, c.audio.view.position),
     activeSlot = c.slots.find((s) => s.id === c.activeId);
   const showProfiles = () => {
     c.audio.pause();
     setProfiles(true);
   };
+  const showStudio = () => {
+    c.audio.pause();
+    setStudio(true);
+  };
+  const totalClues = c.runtimeContent.clues.length;
   return (
     <div className="app">
       <header className="topbar">
@@ -54,6 +71,10 @@ export function App() {
             <Headphones size={14} />
             互动广播剧
           </span>
+          <button onClick={showStudio}>
+            <Wand2 size={14} />
+            场景创作区
+          </button>
           <button onClick={() => setAbout(true)}>
             <BookOpen size={14} />
             收听指南
@@ -97,22 +118,35 @@ export function App() {
               </div>
               <h3>失联的灯塔</h3>
               <p>1998 年 · 雾港</p>
-              <span className="case-difficulty">悬疑 / 约 4 分钟对白</span>
+              <span className="case-difficulty">悬疑 / 含自创调查场景</span>
             </div>
-            <Chapters content={CASE_CONTENT} story={c.story} onEnter={c.go} />
+            <Chapters
+              content={{
+                ...graph,
+                scenes: graph.scenes.some((s) => s.id === c.story.sceneId)
+                  ? graph.scenes
+                  : [...graph.scenes, runtimeScene],
+              }}
+              story={c.story}
+              onEnter={c.go}
+            />
             <div className="investigation-progress">
               <div>
                 <span>探索进度</span>
-                <b>{sceneProgress(CASE_CONTENT, c.story.visited)}%</b>
+                <b>{sceneProgress(graph, c.story.visited)}%</b>
               </div>
               <div className="progress-track">
                 <i
                   style={{
-                    width: `${sceneProgress(CASE_CONTENT, c.story.visited)}%`,
+                    width: `${sceneProgress(graph, c.story.visited)}%`,
                   }}
                 />
               </div>
-              <small>{c.story.visited.length} / 5 个场景已到访</small>
+              <small>
+                {graph.scenes.filter((s) => c.story.visited.includes(s.id))
+                  .length}{" "}
+                / {graph.scenes.length} 个场景已到访
+              </small>
             </div>
             <div className="left-note">
               <Info size={13} />
@@ -132,7 +166,11 @@ export function App() {
                     <span className="live-dot" />{" "}
                     {c.audio.view.playing ? "正在收听" : "调查进行中"}
                   </span>
-                  <span>EPISODE {scene.chapter} / 05</span>
+                  <span>
+                    {scene.chapter
+                      ? `EPISODE ${scene.chapter} / ${String(graph.scenes.length).padStart(2, "0")}`
+                      : "CUSTOM SCENE"}
+                  </span>
                 </div>
                 <div className="stage-title">
                   <span className="scene-location">
@@ -145,7 +183,9 @@ export function App() {
               </div>
               <div className="scene-meta">
                 <div>
-                  <span className="chapter-badge">CH. {scene.chapter}</span>
+                  <span className="chapter-badge">
+                    {scene.chapter ? `CH. ${scene.chapter}` : "自创"}
+                  </span>
                   <strong>{c.episode.title}</strong>
                   <small>{c.episode.version}</small>
                 </div>
@@ -183,7 +223,7 @@ export function App() {
               </div>
             </section>
             <Directions
-              content={CASE_CONTENT}
+              content={graph}
               story={c.story}
               clues={c.evidence.clues}
               onChoose={c.choose}
@@ -241,7 +281,7 @@ export function App() {
             ) : (
               <EvidencePanel
                 state={c.evidence}
-                content={CASE_CONTENT}
+                content={c.runtimeContent}
                 onJump={c.jump}
                 onEdit={c.edit}
                 onDelete={c.remove}
@@ -254,11 +294,11 @@ export function App() {
                 <span className="mini-label">SOUND EVIDENCE</span>
                 <b>
                   {c.evidence.clues.length}
-                  <small> / 4</small>
+                  <small> / {totalClues}</small>
                 </b>
               </div>
               <div className="evidence-dots">
-                {CASE_CONTENT.clues.map((clue) => (
+                {c.runtimeContent.clues.map((clue) => (
                   <span
                     key={clue.id}
                     title={clue.title}
@@ -302,8 +342,17 @@ export function App() {
           onSave={c.save}
           onDelete={c.removeSlot}
           onImport={c.importText}
+          onImportPack={c.importPackText}
           onExport={c.download}
+          onExportCase={c.downloadCasePack}
           onClose={() => setProfiles(false)}
+        />
+      )}
+      {studio && (
+        <StudioDialog
+          controller={c.studio}
+          runtimeContent={c.runtimeContent}
+          onClose={() => setStudio(false)}
         />
       )}
       {about && (
@@ -322,6 +371,9 @@ export function App() {
             </p>
             <p>
               用「标记此刻」保留最近五秒的个人笔记，编辑观察，再从笔记跳回录音。自由笔记不会自动解锁证据。
+            </p>
+            <p>
+              打开顶部「场景创作区」，上传本地录音并逐句配置字幕与声音线索，经预览和发布检查后即可把新场景接入调查。草稿编辑不会影响正在进行的调查。
             </p>
             <p>
               从「调查存档」命名保存不同进度，也可导出或导入本地文件。新调查保留已有存档；切换存档会替换当前未保存进度，请先保存。

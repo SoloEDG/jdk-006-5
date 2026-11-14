@@ -8,6 +8,8 @@ import type {
 import { bounded } from "../../../shared/time";
 import { markHeard } from "../../../shared/heard";
 import { captureWindow } from "../model/bookmark";
+import { resolveMediaUrl } from "../../studio/model/useStudio";
+import { isStudioAudio } from "../../studio/model/publish";
 type View = Omit<TransportState, "loadedId">;
 export function useTransport(
   episode: Episode,
@@ -40,72 +42,89 @@ export function useTransport(
       playing: false,
       error: null,
     }));
-    const audio = new Audio(episode.audio);
-    audio.preload = "auto";
-    const valid = () => generation.current === token;
-    const commit = () => {
-      if (!valid()) return;
-      loaded.current?.element.pause();
-      const old = loaded.current?.element;
-      loaded.current = { element: audio, episode };
-      audio.volume = 0.8;
-      audio.playbackRate = rateTarget.current ?? 1;
-      audio.currentTime = bounded(
-        seekTarget.current ?? 0,
-        0,
-        audio.duration || episode.duration,
-      );
-      seekTarget.current = null;
-      rateTarget.current = null;
-      old?.removeAttribute("src");
-      setView((v) => ({
-        ...v,
-        loading: false,
-        position: audio.currentTime,
-        duration: audio.duration || episode.duration,
-        rate: audio.playbackRate,
-        volume: 0.8,
-        playing: false,
-      }));
-    };
-    const time = () => {
-      if (!valid() || loaded.current?.element !== audio) return;
-      setView((v) => ({ ...v, position: audio.currentTime }));
-      callback.current(
-        episode.id,
-        bounded(audio.currentTime, 0, episode.duration),
-      );
-    };
-    const playing = () => {
-      if (valid()) setView((v) => ({ ...v, playing: !audio.paused }));
-    };
-    const error = () => {
-      if (valid())
+    let cancelled = false;
+    let audio: HTMLAudioElement | null = null;
+    const valid = () => generation.current === token && !cancelled;
+    const boot = (src: string) => {
+      if (cancelled) return;
+      audio = new Audio(src);
+      audio.preload = "auto";
+      const commit = () => {
+        if (!valid() || !audio) return;
+        loaded.current?.element.pause();
+        const old = loaded.current?.element;
+        loaded.current = { element: audio, episode };
+        audio.volume = 0.8;
+        audio.playbackRate = rateTarget.current ?? 1;
+        audio.currentTime = bounded(
+          seekTarget.current ?? 0,
+          0,
+          audio.duration || episode.duration,
+        );
+        seekTarget.current = null;
+        rateTarget.current = null;
+        old?.removeAttribute("src");
         setView((v) => ({
           ...v,
           loading: false,
+          position: audio!.currentTime,
+          duration: audio!.duration || episode.duration,
+          rate: audio!.playbackRate,
+          volume: 0.8,
           playing: false,
-          error: "录音暂时无法加载，请重试或切换章节。",
         }));
-    };
-    audio.addEventListener("loadedmetadata", commit, { once: true });
-    audio.addEventListener("timeupdate", time);
-    audio.addEventListener("play", playing);
-    audio.addEventListener("pause", playing);
-    audio.addEventListener("ended", playing);
-    audio.addEventListener("error", error);
-    audio.load();
-    return () => {
-      audio.pause();
-      audio.removeEventListener("timeupdate", time);
-      audio.removeEventListener("play", playing);
-      audio.removeEventListener("pause", playing);
-      audio.removeEventListener("ended", playing);
-      audio.removeEventListener("error", error);
-      audio.removeAttribute("src");
+      };
+      const time = () => {
+        if (!valid() || !audio || loaded.current?.element !== audio) return;
+        setView((v) => ({ ...v, position: audio!.currentTime }));
+        callback.current(
+          episode.id,
+          bounded(audio.currentTime, 0, episode.duration),
+        );
+      };
+      const playing = () => {
+        if (valid()) setView((v) => ({ ...v, playing: !audio!.paused }));
+      };
+      const error = () => {
+        if (valid())
+          setView((v) => ({
+            ...v,
+            loading: false,
+            playing: false,
+            error: "录音暂时无法加载，请重试或切换章节。",
+          }));
+      };
+      audio.addEventListener("loadedmetadata", commit, { once: true });
+      audio.addEventListener("timeupdate", time);
+      audio.addEventListener("play", playing);
+      audio.addEventListener("pause", playing);
+      audio.addEventListener("ended", playing);
+      audio.addEventListener("error", error);
       audio.load();
     };
-  }, [episode.id]);
+    if (isStudioAudio(episode.audio)) {
+      resolveMediaUrl(episode.audio.slice("media://".length))
+        .then(boot)
+        .catch(() => {
+          if (valid())
+            setView((v) => ({
+              ...v,
+              loading: false,
+              error: "自创录音无法读取，请重新导入创作区文件。",
+            }));
+        });
+    } else {
+      boot(episode.audio);
+    }
+    return () => {
+      cancelled = true;
+      if (audio) {
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+      }
+    };
+  }, [episode.id, episode.audio]);
   const pause = () => loaded.current?.element.pause();
   const seek = (position: number) => {
     const a = loaded.current?.element;

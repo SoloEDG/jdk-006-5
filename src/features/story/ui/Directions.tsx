@@ -36,7 +36,9 @@ export function Directions({
                       c.requires
                         .filter((id) => !clues.includes(id))
                         .map(
-                          (id) => content.clues.find((c) => c.id === id)?.title,
+                          (id) =>
+                            content.clues.find((c) => c.id === id)?.title ??
+                            "未知线索",
                         )
                         .join("、")
                     : c.description}

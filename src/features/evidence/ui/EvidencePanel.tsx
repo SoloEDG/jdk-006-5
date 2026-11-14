@@ -116,11 +116,9 @@ export function EvidencePanel({
               )}
               <button className="note-play" onClick={() => onJump(note)}>
                 <Headphones size={13} />
-                {
-                  content.scenes.find(
-                    (scene) => scene.id === note.anchor.sceneId,
-                  )?.title
-                }{" "}
+                {content.scenes.find(
+                  (scene) => scene.id === note.anchor.sceneId,
+                )?.title ?? "已移除的场景"}{" "}
                 · {time(note.anchor.start)} — {time(note.anchor.end)}
               </button>
               <div className="note-actions">
